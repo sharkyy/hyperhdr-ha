@@ -40,6 +40,7 @@ from . import (
     listen_for_instance_updates,
 )
 from .const import (
+    CONF_INSTANCE,
     CONF_INSTANCE_CLIENTS,
     DOMAIN,
     HYPERHDR_MANUFACTURER_NAME,
@@ -48,7 +49,9 @@ from .const import (
     TYPE_HYPERHDR_CAMERA,
 )
 
-IMAGE_STREAM_JPG_SENTINEL = "data:image/jpg;base64,"
+# HyperHDR < 2.0.0 uses "result" -> "image"
+# HyperHDR >= 2.0.0 uses "data" -> "image"
+KEY_DATA = "data"
 
 
 async def async_setup_entry(
@@ -106,8 +109,6 @@ async def async_setup_entry(
 class HyperHDRCamera(Camera):
     """ComponentBinarySwitch switch class."""
 
-    # The camera component does not work and is being disabled by default.
-    _attr_entity_registry_enabled_default = False
     _attr_has_entity_name = True
     _attr_name = None
 
@@ -134,8 +135,12 @@ class HyperHDRCamera(Camera):
         # The number of open streams, when zero the stream is stopped.
         self._image_stream_clients = 0
 
+        # Subscribe to all possible stream update events to support v19-v21+
         self._client_callbacks = {
-            f"{KEY_LEDCOLORS}-{KEY_IMAGE_STREAM}-{KEY_UPDATE}": self._update_imagestream
+            f"{KEY_LEDCOLORS}-{KEY_IMAGE_STREAM}-{KEY_UPDATE}": self._update_imagestream,
+            f"{KEY_IMAGE_STREAM}-{KEY_UPDATE}": self._update_imagestream,
+            f"{CONF_INSTANCE}-{KEY_IMAGE_STREAM}-{KEY_UPDATE}": self._update_imagestream,
+            f"system-{KEY_IMAGE_STREAM}-{KEY_UPDATE}": self._update_imagestream,
         }
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, self._device_id)},
@@ -159,14 +164,29 @@ class HyperHDRCamera(Camera):
         """Update HyperHDR components."""
         if not img:
             return
-        img_data = img.get(KEY_RESULT, {}).get(KEY_IMAGE)
-        if not img_data or not img_data.startswith(IMAGE_STREAM_JPG_SENTINEL):
+
+        # Handle both v1 (result.image) and v2+ (data.image) structures
+        # We check data first (v2), then result (v1)
+        img_data = img.get(KEY_DATA, img.get(KEY_RESULT, {})).get(KEY_IMAGE)
+
+        if not img_data or not isinstance(img_data, str):
             return
+
+        # Parse data URI: data:[<mediatype>][;base64],<data>
+        # We split by comma to separate metadata from base64 data
+        try:
+            header, encoded = img_data.split(",", 1)
+        except ValueError:
+            # Not a valid data URI
+            return
+
+        if "base64" not in header:
+             # We expect base64 encoded data
+            return
+
         async with self._image_cond:
             try:
-                self._image = base64.b64decode(
-                    img_data.removeprefix(IMAGE_STREAM_JPG_SENTINEL)
-                )
+                self._image = base64.b64decode(encoded)
             except binascii.Error:
                 return
             self._image_cond.notify_all()
@@ -179,11 +199,10 @@ class HyperHDRCamera(Camera):
 
     async def _start_image_streaming_for_client(self) -> bool:
         """Start streaming for a client."""
-        if (
-            not self._image_stream_clients
-            and not await self._client.async_send_image_stream_start()
-        ):
-            return False
+        if not self._image_stream_clients:
+             # Fire and forget: newer HyperHDR versions might not return a response
+             # that the client library expects, so we ignore the result.
+             await self._client.async_send_image_stream_start()
 
         self._image_stream_clients += 1
         self._attr_is_streaming = True
@@ -195,6 +214,7 @@ class HyperHDRCamera(Camera):
         self._image_stream_clients -= 1
 
         if not self._image_stream_clients:
+            # Fire and forget
             await self._client.async_send_image_stream_stop()
             self._attr_is_streaming = False
             self.async_write_ha_state()
