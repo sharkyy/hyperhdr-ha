@@ -34,10 +34,10 @@ from .const import (
 )
 
 ### HyperHDR v0.0.7
-PLATFORMS = [Platform.LIGHT, Platform.SWITCH]
+# PLATFORMS = [Platform.LIGHT, Platform.SWITCH]
 
 ### Enable BROKEN camera stream. Camera is removed for good reason! Do not open camera related issues!!
-# PLATFORMS = [Platform.CAMERA, Platform.LIGHT, Platform.SWITCH]
+PLATFORMS = [Platform.CAMERA, Platform.LIGHT, Platform.SWITCH]
 
 ### Original - From Hyperion
 # PLATFORMS = [Platform.CAMERA, Platform.LIGHT, Platform.SENSOR, Platform.SWITCH]
